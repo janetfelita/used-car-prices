@@ -1,0 +1,954 @@
+---
+title: "Predicting Used Car Prices with Linear Regression"
+author: "Janet Felita"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::html_clean:
+    highlight: kate
+    thumbnail: False
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+## Global options
+#options(max.print="75")
+opts_chunk$set(cache=TRUE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=FALSE,
+               warning=FALSE)
+opts_knit$set(width=75)
+
+options(scipen = 999)
+```
+
+# Background
+
+## Background Story
+
+Hi! This is a project submission for a task in a bootcamp course I'm attending right now. The goal of this project is to create a linear regression model and I chose the Used Cars Dataset that I obtained on Kaggle [here](https://www.kaggle.com/saisaathvik/used-cars-dataset-from-cardekhocom) which was scraped from [CarDekho.com](www.cardekho.com), one of India's leading car search venture.
+
+A little background story of the company: CarDekho.com, as a platform where users could buy new and used cars that are best suited for them, carries rich automotive content such as expert reviews, detailed specs and prices, comparisons as well as videos and pictures of all car brands and models available in India. The company has tie-ups with many auto manufacturers, more than 4000 car dealers and numerous financial institutions to facilitate the purchase of vehicles. 
+
+Aside from the ability of the platform to sell cars to users, users could also sell their car to CarDekho.com. I personally think that it would be easier to valuate the price of a new car rather than a used car, since used car prices usually depreciated within time and there are also a lot of other factors that affects the price depreciation such as the brand model, total kilometers driven, the condition of the car, and others.
+
+Since there are many factors that could determine the resale value of a used car, I'm going to build a model to predict just that.
+
+## Objective
+
+The objective of this project is to build a model to predict the resale value of used cars based on their specifications using linear regression.
+
+# The Data
+
+## Preparation
+
+Importing libraries that will be used further on.
+
+```{r message=FALSE}
+# import libraries
+library(tidyverse)
+library(dplyr)
+library(inspectdf)
+library(magicfor)
+library(ggpubr)
+library(GGally)
+library(ggplot2)
+library(viridis)
+library(MLmetrics)
+library(fastDummies)
+library(car)
+library(caret)
+library(vtreat)
+library(lmtest)
+library(pastecs)
+```
+
+Importing the Used Cars Dataset.
+
+```{r}
+# import data
+car <- read.csv("data/cardekho_cleaned.csv", 
+                na.strings=c("null", "","NA"), 
+                stringsAsFactors = T)
+```
+
+```{r echo=FALSE}
+DT::datatable(car, rownames = F)
+```
+
+Description of each columns:
+
+* `id`: index
+* `car_name`: name of car
+* `brand`: brand of car extracted from `car_name`
+* `model`: model of car extracted from `car_name`
+* `new_price`: min. to max. price range of the new car
+* `min_cost_price`: new min. price extracted from `new_price`
+* `max_cost_price`: new max. price extracted from `new_price`
+* `vehicle_age`: age of the vehicle since it was first bought
+* `km_driven`: total km driven by car
+* `seller_type`: type of seller
+* `fuel_type`: type of fuel used by car
+* `transmission_type`: manual/automatic
+* `mileage`: fuel efficiency in car (kmpl)
+* `engine`: car's engine in cc
+* `max_power`: max. power of car in bhp
+* `seats`: number of seats in car
+* `selling_price`: selling price of used car
+
+Right off the bat we could see that there are missing values within the dataset. We're going to check how many of them were NAs and if there's any row duplicates.
+
+```{r}
+# check duplicates
+table(duplicated(car))
+
+# check NA
+colSums(is.na(car))
+```
+
+```{r echo=FALSE, fig.align='center', out.width="60%"}
+col_names <- colnames(car)
+na_value <- c(sum(is.na(car$id)),
+              sum(is.na(car$car_name)),
+              sum(is.na(car$brand)),
+              sum(is.na(car$model)),
+              sum(is.na(car$new_price)),
+              sum(is.na(car$min_cost_price)),
+              sum(is.na(car$max_cost_price)),
+              sum(is.na(car$vehicle_age)),
+              sum(is.na(car$km_driven)),
+              sum(is.na(car$seller_type)),
+              sum(is.na(car$fuel_type)),
+              sum(is.na(car$transmission_type)),
+              sum(is.na(car$mileage)),
+              sum(is.na(car$engine)),
+              sum(is.na(car$max_power)),
+              sum(is.na(car$seats)),
+              sum(is.na(car$selling_price)))
+na_percentage <- round(na_value/nrow(car)*100, 2)
+
+na_df <- data.frame(col_names, na_value, na_percentage)
+
+ggplot(na_df, aes(y = col_names, x = na_percentage)) +
+  geom_col(aes(fill = na_percentage)) +
+  geom_text(aes(label = paste0(na_percentage, " %")), 
+            position = position_dodge(width = 0.9), 
+            vjust = 0.3,
+            hjust = 0.8) +
+  theme_light() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Missing Values") +
+  scale_fill_viridis(option = "plasma")
+```
+
+From the results above we could see that there are 51.69% missing values with a total of 10,102 rows which means that half of our data consists of missing values in 3 columns: `new_price`, `min_cost_price`, and `max_cost_price`. The rows in which missing values are present are the same since `min_cost_price` and `max_cost_price` derived from `new_price`.
+
+Before going on to the next step of imputing the missing values, I'd first like to create a new column `average_new_price` which is the average price between `min_cost_price` and `max_cost_price`, and removing those 2 columns afterwards.
+
+```{r}
+# remove id column and create average_new_price column
+car <- car %>% 
+  mutate(average_new_price = (min_cost_price + max_cost_price)/2) %>% 
+  select(-c(min_cost_price, max_cost_price)) %>% 
+  select(1:5,16, everything())
+```
+
+With this dataset I'm going to impute the missing values with the mean of `average_new_price` of each car name. To ease this process, I'll split my data into 2: data with no missing values and with missing values.
+
+```{r}
+# car with na
+car_na <- car[is.na(car$average_new_price),] %>% 
+  select(!c(new_price, average_new_price))
+
+# car with no na
+car_no_na <- car %>% drop_na() 
+```
+
+Next, I'll be going to impute the missing values based on the `car_name` provided only if there's the same `car_name` listed on both data.
+
+```{r message=FALSE}
+# calculating the mean of each car name from car_no_na
+car_no_na_mean <- car_no_na %>%  
+  group_by(car_name) %>% 
+  summarise(average_new_price = mean(average_new_price)) %>% 
+  ungroup()
+
+# imputing mean price to car_na
+car_2 <- left_join(car_na, car_no_na_mean)
+
+# check NA left
+round(colSums(is.na(car_2))/nrow(car)*100, 2)
+```
+
+After the imputation process above, the missing values are reduced but it's still 21.15% of the total data in which the `car_name` doesn't exist in the data with no missing values. Next, I'll be splitting the `car_na_2` into 2 data with the same method as the first pre-imputation process and joining them to the original no NA data for the data that has been imputed.
+
+```{r}
+# splitting the no NA data
+car_no_na_2 <- car_2 %>% drop_na()
+car_no_na_3 <- bind_rows(car_no_na, car_no_na_2)
+
+# car na
+car_na_3 <- car_2[is.na(car_2$average_new_price),] %>% 
+  select(!c(average_new_price))
+```
+
+Ideally, I would say that the price of a new car really depends on the type and brand of the car, but seeing that we don't have those data available, I'm going to impute it based on the `average_new_price` of a car's specifications, in this case `max_power` and `engine`. Both of them are numeric variables and it's going to be hard to determine the price based on numerics (if not with machine learning methods too but that's not our objective here), hence we'll be categorizing those to a categorical range. I'd first like to see how these data are distributed.
+
+```{r}
+# engine summary from car_na_3
+summary(car_na_3$engine)
+car_na_3 %>% filter(engine >= 1500 & engine <= 3000) %>% nrow()
+
+# engine summary from the car_no_na
+summary(car_no_na_3$engine)
+
+# max_power summary from car_na_2
+summary(car_na_3$max_power)
+car_na_3 %>% filter(max_power >= 105 & max_power <= 200) %>% nrow()
+
+# max_power summary from the car_no_na
+summary(car_no_na_3$max_power)
+```
+
+From the information above, we could see that 75% of the `engine` ranges from 600 - 1600 on both missing values and non-missing values data and the number of data ranging from 1500 - 3000 is still quite a lot which is 1002 rows.  From that information we'll be categorizing the `engine` by 100cc intervals until it reaches 3000 and the rest will be going to one category.
+
+As for the `max_power`, it ranges from 30 - 120 on both data and the number of data ranging from 105 - 200 is still 902 rows, hence we'll be categorizing it by 10bhp intervals until it reaches 200.
+
+```{r message=FALSE}
+# categorizing engine and max power to data range
+magic_for(print, silent = TRUE)
+## create new column
+### create breaks for engine
+engine_breaks <- get_breaks(by = 100)(x = 1:3000)
+### create labels for engine
+for (i in 1:n_distinct(engine_breaks)){
+  print(paste0(engine_breaks[i], " - ", engine_breaks[i+1]))
+}
+engine_labels <- magic_result_as_vector()
+### omitting the last element of engine_labels
+engine_labels <- engine_labels[-length(engine_labels)]
+### create breaks for max_power
+max_power_breaks <- get_breaks(by = 10)(x = 1:200)
+### create labels for max_power
+for (i in 1:n_distinct(max_power_breaks)){
+  print(paste0(max_power_breaks[i], " - ", max_power_breaks[i+1]))
+}
+max_power_labels <- magic_result_as_vector()
+### omitting the last element of max_power_labels
+max_power_labels <- max_power_labels[-length(max_power_labels)]
+### create new column engine_range and max_power_range for no na data
+car_no_na_4 <- car_no_na_3 %>% 
+  mutate(engine_range = cut(engine,
+                            breaks = engine_breaks,
+                            labels = engine_labels),
+         max_power_range = cut(max_power,
+                               breaks = max_power_breaks,
+                               labels = max_power_labels)) %>% 
+  mutate_at(vars(engine_range, max_power_range), as.character)
+### impute engine_range and max_power_range for no NA data
+car_no_na_4$engine_range[is.na(car_no_na_4$engine_range)] <- "> 3000"
+car_no_na_4$max_power_range[is.na(car_no_na_4$max_power_range)] <- "> 200"
+### create new column engine_range and max_power_range for na data
+car_na_4 <- car_na_3 %>% 
+  mutate(engine_range = cut(engine,
+                            breaks = engine_breaks,
+                            labels = engine_labels),
+         max_power_range = cut(max_power,
+                               breaks = max_power_breaks,
+                               labels = max_power_labels)) %>% 
+  mutate_at(vars(engine_range, max_power_range), as.character)
+### impute engine_range and max_power_range for NA data
+car_na_4$engine_range[is.na(car_na_4$engine_range)] <- "> 3000"
+car_na_4$max_power_range[is.na(car_na_4$max_power_range)] <- "> 200"
+
+## calculate mean for no na data
+car_no_na_mean_2 <- car_no_na_4 %>% 
+  group_by(engine_range, max_power_range) %>% 
+  summarise(average_new_price = mean(average_new_price)) %>% 
+  ungroup()
+
+## impute mean price to car_na_3
+car_na_5 <- left_join(car_na_4, car_no_na_mean_2)
+
+## check NA left
+round(colSums(is.na(car_na_5))/nrow(car)*100, 2)
+```
+After the second imputation process, there's still a remaining of 3.09% missing values left from the total data and I decided to omit those missing values since it's < 5% and it's going to be less and less precise to impute the remaining NAs with just one variable of either `engine` or `max_power`.
+
+```{r}
+# dropping all NAs
+car_no_na_5 <- car_na_5 %>% drop_na()
+
+# joining all data
+car_3 <- bind_rows(car_no_na_4, car_no_na_5)
+
+# check NA for new_price
+colSums(is.na(car_3))
+
+# check missing rows
+round(nrow(car_3)/nrow(car)*100 + 3.09, 2)
+```
+
+Quick data summary.
+
+```{r}
+glimpse(car_3)
+```
+
+After playing around with the data, I conclude that `car_name` and `model` won't be doing any good in further analysis because:
+
+* `brand` and `model` are actually derived from the `car_name`. In this case I see that `brand` serves better purpose in predicting resale value since different `brand` names has each of their own different branding and some brands have a higher resale value than the others.
+* the model of the car doesn't really matter here since each brand have a specific name and different from each other. Even if a different brand has the same car `model`, there's no guarantee that the specifications of those cars are the same. The `model` here is just a matter of naming and not really showing anything else. It would make so much difference when instead of just a `model` name, this data provides us along with the car type (hatchback, sedan, SUV, etc.) because a similar specific model of a car along with the type could have a different `model` name under different brands/car make, but having a similar price range.
+Based on those 2 things above, I'm going to remove `car_name` and `model` columns along with `id`, `new_price`, `engine_range`, and `max_power_range`. 
+
+```{r}
+# remove columns
+car_clean <- car_3 %>% 
+  select(!c(id, new_price, car_name, model, engine_range, max_power_range))
+```
+
+## Outliers
+
+Now we're moving on to the next step: checking on whether there's any *"anomalies"* in our dataset. I'm first going to look closely on the descriptive statistics of each column.
+
+```{r echo=TRUE, results='hide'}
+car_clean %>% inspect_num()
+```
+
+```{r echo=FALSE}
+a <- car_clean %>% inspect_num()
+
+desc_stats <- a %>%
+  mutate(min = format(round(min, 2), nsmall = 2, big.mark = ","),
+         q1 = format(round(q1, 2), nsmall = 2, big.mark = ","),
+         median = format(round(median, 2), nsmall = 2, big.mark = ","),
+         mean = format(round(mean, 2), nsmall = 2, big.mark = ","),
+         q3 = format(round(q3, 2), nsmall = 2, big.mark = ","),
+         max = format(round(max, 2), nsmall = 2, big.mark = ","),
+         sd = format(round(sd, 2), nsmall = 2, big.mark = ","),
+         pcnt_na = format(round(pcnt_na, 2), nsmall = 2, big.mark = ","))
+
+DT::datatable(desc_stats)
+```
+
+From the brief descriptive statistics above, we could see there are some oddities in our data:
+
+* there's no such thing as a 0-seater car.
+* the largest difference between `mean` and `median` is in the prices where there's an INR 2,881,145 difference in `average_new_price` and INR 226,194 in `selling_price` which means that there's extreme outliers at the higher side of the price.
+* other variables' `mean` and `median` value gap is not as huge as the prices, but `km_driven`, `engine`, and `max_power` are worth to be checked later on.
+
+Let's first tackle the first problem: the car with 0 seats.
+
+```{r}
+# filter rows
+no_seats <- car %>% filter(seats == 0)
+
+unique(no_seats$car_name)
+```
+
+These 2 cars' seats are listed as 0 whereas the actual Honda City and Nissan Kicks are both a 5-seater car. Let's fix the data.
+
+```{r}
+# re-input correct value
+car_clean <- car_clean %>% 
+  mutate(seats = ifelse(seats == 0, 5, seats))
+
+# re-check data
+car_clean %>% filter(seats == 0)
+```
+
+Done for the first problem. The second problem is the outliers in both `average_new_price` and `selling_price`. Let's take a look at those values when plotted with the same scale.
+
+```{r fig.align='center', out.width="100%"}
+plot1 <- ggplot(car_clean, aes(x = as.numeric(row.names(car_clean)), 
+                               y = average_new_price)) +
+  geom_point(aes(color = average_new_price)) +
+  scale_y_continuous(breaks = seq(0, 500000000, by = 100000000)) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("index") +
+  scale_color_viridis(option = "plasma")
+
+plot2 <- ggplot(car_clean, aes(x = as.numeric(row.names(car_clean)), 
+                               y = selling_price)) +
+  geom_point(aes(color = selling_price)) +
+  scale_y_continuous(limits = c(0, 500000000), 
+                     breaks = seq(0, 500000000, by = 100000000)) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  xlab("index") +
+  scale_color_viridis(option = "plasma")
+
+egg::ggarrange(plot1, plot2, ncol = 2)
+```
+
+Looking at the side by side plot comparison with the same scaling we could conclude one thing: resale price are so much lower than the new price, which is why, *a little off-topic*, many people are saying that it's not worth it to get a car loan since its price depreciated quickly while installments alone could take up to 5 years or more. By the time the installment is over, the car isn't worth as much.
+
+Back to the topic, here we could see that there are indeed outliers for both `average_new_price` and `selling_price`. However, we could also see that the `average_new_price` are roughly divided into 3 groups including the outliers which are: cars priced INR 0 - 150,000,000, INR 150,000,000 - 200,000,000, and INR 350,000,000 - 500,000,000. This could also mean that the `average_new_price` isn't normally distributed. 
+
+It could be a little overwhelming to remove all the outliers just by looking at the plot since the outlier data looked like they are quite a lot in number, but remembering that this dataset actually contains more than 15,000 rows, I assume that it would still be safe to remove all the outliers.
+
+```{r}
+# remove average_new_price outliers
+car_clean_2 <- car_clean %>% filter(average_new_price < 200000000)
+
+# check % of data removed
+round((nrow(car_clean)/nrow(car) - 1)*100, 2)
+round((nrow(car_clean_2)/nrow(car) - 1)*100, 2)
+```
+
+We just removed another .5% of the data, which still lies safely below 5%. We're now going to plot the correlation between `average_new_price` and `selling_price` to check for other outliers.
+
+```{r fig.align='center'}
+ggplot(car_clean_2, aes(x = average_new_price, y = selling_price)) +
+  geom_point(aes(color = average_new_price)) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_color_viridis(option = "plasma")
+```
+
+Now we could clearly see the outliers of the `selling_price`. The extreme ones are just 3 data in total and we're going to remove them later. We're now going back to observe the `average_new_price`, the INR 0 - 150,000,000 group mentioned before were actually roughly divided into several groups again if seen in a smaller scale. For now we're going to let them be although by just briefly looking at it we know that the outliers aren't that many compared to our total data.
+
+```{r}
+# remove selling_price outlier
+car_clean_2 <- car_clean_2 %>% filter(selling_price < 20000000)
+```
+
+We're now going to look at the frequency table of each categorical values.
+
+```{r fig.align='center', results='asis'}
+brand_freq <- car_clean_2 %>% group_by(brand) %>% summarise(value = length(brand)) %>% ungroup()
+d1 <- kable(car_clean_2 %>% group_by(seller_type) %>% summarise(value = length(seller_type)) %>% ungroup())
+d2 <- kable(car_clean_2 %>% group_by(fuel_type) %>% summarise(value = length(fuel_type)) %>% ungroup())
+d3 <- kable(car_clean_2 %>% group_by(transmission_type) %>% summarise(value = length(transmission_type)) %>% ungroup())
+
+ggplot(brand_freq, aes(x = brand, y = value)) +
+  geom_col(fill = "#b6308b") +
+  geom_text(aes(label = value), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.4,
+            hjust = 0.5) +
+  theme_classic() +
+  ylab("frequency") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank())
+
+knitr::kables(list(d1, d2, d3)) %>% kableExtra::kable_styling(position = "center")
+```
+
+We could see from the bar plot above that there's in fact a similar name `Isuzu` and `ISUZU` and some brands with fewer recurrence. Since this dataset consists of tens of thousands of rows, I decided to remove `brand` with < 10 recurrence to ensure that when we split the data into `train` and `test`, both parts will at least get the same `brand`. We'll also remove Electric `fuel_type` for the same reason.
+
+```{r}
+# change ISUZU to Isuzu
+car_clean_2 <- car_clean_2 %>% mutate(brand = as.character(brand),
+                                      brand = case_when(brand == "ISUZU" ~ "Isuzu",
+                                              T ~ brand),
+                                      brand = as.factor(brand))
+
+# filter brands with <= 10 recurrence
+brand_freq <- car_clean_2 %>% group_by(brand) %>% summarise(value = length(brand)) %>% ungroup() %>% filter(value >= 10)
+brand_name <- unique(brand_freq$brand)
+
+# filter rows in original dataset
+ car_clean_2 <- car_clean_2 %>% filter(brand %in% brand_name, fuel_type != "Electric")
+
+# check % data removed
+round(((nrow(car_clean_2)/nrow(car)) - 1)*100, 2)
+```
+
+Great! Still below 5%.
+
+## Analysis
+
+We're now going to take a look at the correlation between each variables.
+
+```{r fig.align='center'}
+ggcorr(car_clean_2, label = T, label_size = 2.5, hjust = 1, layout.exp = 3) + 
+  scale_fill_viridis(option = "plasma")
+```
+
+We could see that most of the variables have a strong correlation with the `selling_price`. We're now going to take a look at the `selling_price` data distribution.
+
+```{r fig.align='center'}
+ggplot(car_clean_2, aes(selling_price)) +
+  geom_histogram(fill = "#2d1a94", color = "#441d9e", alpha = 0.5, bins = 50) +
+  theme_minimal()
+```
+
+We can see that the `selling_price` is right-skewed and so we're going to transform the `selling_price` to its natural log value. 
+
+```{r}
+# transform to log
+car_clean_3 <- car_clean_2 %>% 
+  mutate(log_selling_price = log(selling_price))
+```
+
+
+Quick check of the transformed result.
+
+```{r fig.align='center'}
+ggplot(car_clean_3, aes(log_selling_price)) +
+  geom_histogram(fill = "#2d1a94", color = "#441d9e", alpha = 0.5) +
+  theme_minimal()
+```
+
+Now our data has been evenly distributed. We can now move on to the next step which is building the regression model.
+
+A problem that I found next within this dataset is that it contains a lot of categorical variables. To avoid future issues, We're going to create our own dummy variables for those categories using `dummy_cols()`. We're also going to remove the `selling_price` column since we're only going to use the `log_selling_price`.
+
+```{r}
+# create dummy variables
+car_dummy <- dummy_cols(car_clean_3, select_columns = c("brand", "seller_type", "fuel_type", "transmission_type"))
+
+# create dummy variables and remove columns which created the variables
+car_dummy_2 <- dummy_cols(car_clean_3, select_columns = c("brand", "seller_type", "fuel_type", "transmission_type"),
+           remove_selected_columns = TRUE)
+
+# remove selling_price column 
+car_dummy_2 <- car_dummy_2 %>% select(-selling_price)
+
+dim(car_dummy_2)
+```
+
+We're now ending up with 55 columns / 54 predictors for the model.
+
+# Modeling
+
+## Split Train and Test Data
+
+Before moving on to the model training, We'll split the `car_clean` data into `test` and `train`. We'll be using an 80:20 ratio.
+
+```{r}
+# split data
+set.seed(902)
+samplesize <- round(0.8 * nrow(car_clean_3), 0)
+index <- sample(seq_len(nrow(car_clean_3)), size = samplesize)
+
+train <- car_clean_3[index, ]
+test <- car_clean_3[-index, ]
+```
+
+
+## Building Model
+
+### First Model
+
+We're now going to build the first model with all predictors.
+
+```{r}
+# model with all predictors
+options(max.print=5.5E5)
+model_1 <- lm(log_selling_price ~ ., train)
+summary(model_1)
+```
+
+So far we could see that the original predictors were only 12 variables, but after we input them to the linear model the variables increases to 41 in total. That is because R automatically creates dummy variables for all those categorical variables since linear regression model could only take numbers for its predictors.
+
+Our first model gives us a result of 0.912 Multiple R-squared and 0.9118 Adjusted R-squared which is actually pretty good, since it means that the model could depict 91.2% of our data. Most of the predictors are also significant to the target `log_selling_price` shown by the `Pr(>|t|)` < 0.05. There are some predictors that aren't significant, but they were all categorical variables which belong to a specific column, so we're not going to remove them.
+
+Although the R-squared values is quite satisfactory, the number of variables used in this model isn't. We're going to tackle this matter in the second model.
+
+### Second Model
+
+We're now going to move to our second model. In this second model we'll *"semi-manually"* create dummy variables for the categories. We're going to follow the steps mentioned in Cory Lesmeister and Sunil Kumar Chinnamgari' book: Advanced Machine Learning with R in treating the training data.
+
+We're first going to create `varlist` object to be used in the data treatment process, which is just extracting all column names from the `car_clean_3` object minus `log_selling_price` and `selling_price` to be treated as strings.
+
+```{r}
+# create varlist object for data treatment
+varlist <- car_clean_3 %>% 
+  select(-"log_selling_price", -"selling_price") %>% 
+  colnames()
+
+# saving deleted columns to an object
+train_log_selling_price <- train$log_selling_price
+test_log_selling_price <- test$log_selling_price
+```
+
+Next we're going to design the treatment sceheme. We're going to use `minFraction` of 0.1 which just means that we want the treatment process to return a categorical output with categories that has at least 10% recurrence from the total counts.
+
+```{r message=FALSE}
+# training data treatment
+train_treatment <- designTreatmentsZ(dframe = train,
+                                     varlist = varlist,
+                                     minFraction = 0.1)
+
+# original n of unique variables for each category
+n_distinct(train$brand)
+n_distinct(train$seller_type)
+n_distinct(train$fuel_type)
+n_distinct(train$transmission_type)
+```
+
+```{r echo=FALSE, datatable, results='asis'}
+# table output
+DT::datatable(train_treatment[2]$scoreFrame, rownames = F)
+# train_treatment[2]$scoreFrame %>%
+#   kable(format = "html", col.names = colnames(train_treatment[2]$scoreFrame)) %>%
+#   kableExtra::kable_styling() %>%
+#   kableExtra::scroll_box(width = "100%", height = "300px")
+```
+
+As we could see from the result above, the `designTreatmentsZ()` function creates a treatment plan in the form of dataframe where it automatically states whether the variable is categorical or not and creates `extraModelDegrees` where the number is actually n-1 of the total categories in each column. It's actually the same concept for how dummy variables are supposed to work in modeling because there's 1 category in each column that is included in the `intercept` value.
+
+The treatment plan also generates `code` column in which:
+
+* clean: not categorical variables
+* catP: categorical variables
+* lev: categorical variables in which there's at least 10% recurrence from the total data
+
+And that's why I personally this method is more efficient rather than letting R decides the dummy variables. However, in this dataframe I slightly spot a problem which is the `transmission_type`. `transmission_type` only consists of 2 categorical variables: Automatic and Manual. Here we can see that both Automatic and Manual has their own `lev` which could cause a perfect collinearity which means that each 0s in Automatic, results a 1 in Manual.
+
+We're now going to apply the treatment plan to the train and test data and delete `lev` Manual column
+
+```{r}
+# apply treatment to both train and test data
+train_2 <- prepare(train_treatment, train) %>% select(-transmission_type_lev_x_Manual)
+test_2 <- prepare(train_treatment, test) %>% select(-transmission_type_lev_x_Manual)
+```
+
+Here is what the treatment result looks like in `train` data.
+
+```{r echo=FALSE, datatable3, results='asis'}
+# dimension
+dim(train_2)
+# table output
+DT::datatable(head(train_2), rownames = F)
+```
+
+We now then have a new additional columns resulting to 18 which is fewer than the first model of 41. We could see that the applied treatment changed the categorical columns with an additional `_catP` and substitutes each categorical variables to the total % recurrence of the said category in each row while inputing "0" or "1" in the `lev` columns. We're now going to remove columns with `_catP` now since we already have the `lev` dummy variables and inputs the `log_selling_price` column back in.
+
+```{r}
+# remove columns with _catP
+train_2 <- train_2 %>%
+  select(-contains("_catP"))
+test_2 <- test_2 %>%
+  select(-contains("_catP"))
+```
+
+We're now going to build the second model.
+
+```{r}
+# joining log_selling_price back to the df
+train_2$log_selling_price <- train_log_selling_price
+
+# model 2
+model_2 <- lm(log_selling_price ~., train_2)
+summary(model_2)
+```
+
+We now have a linear model with 0.863 R-squared, 0.8629 Adj. R-squared, and a total of 14 predictors. There were some predictors that aren't as significant as the others so we're going to make a third model which excludes those variables.
+
+### Third Model
+
+We're now going to build the third model which basically uses the same predictors as the second model minus the insignificant variables.
+
+```{r}
+# model 3
+model_3 <- lm(log_selling_price ~. - seats -seller_type_lev_x_Dealer, train_2)
+summary(model_3)
+```
+
+There's only a 0.1% difference between the second model and the third model while the third only needs 12 predictors, so between the 2 model (`model_2` and `model_3`), we'll go for the 3rd model and compare its prediction results to `model_1`.
+
+# Model Evaluation
+
+## Prediction Results
+
+We're now going to use the first and third model to predict the test results.
+
+```{r}
+# predict with first model
+predict_1 <- predict(model_1, test)
+
+# predict with third model
+predict_3 <- predict(model_3, test_2)
+
+head(predict_1)
+head(predict_3)
+```
+
+The results weren't very much different. We could see that the second model tends to predict the variables higher than the first model.
+
+We're now going to compare the Adjusted R-squared, RMSE (for `train` and `test`), and MAPE for each models.
+
+```{r results='hide'}
+# adj. r squared
+summary(model_1)$adj.r.squared
+summary(model_2)$adj.r.squared
+
+# RMSE train
+RMSE(model_1$fitted.values, train$log_selling_price)
+RMSE(model_2$fitted.values, train_2$log_selling_price)
+
+# RMSE test
+RMSE(predict_1, test$log_selling_price)
+RMSE(predict_3, test_log_selling_price)
+
+# MAPE
+MAPE(predict_1, test$log_selling_price)
+MAPE(predict_3, test_log_selling_price)
+```
+
+```{r echo=FALSE, results='asis'}
+# create columns
+Model <- c("model_1", "model_3")
+Predictors <- c("41", "12")
+Adj.R_squared <- c(paste0(round(summary(model_1)$adj.r.squared*100, 2), " %"), 
+                   paste0(round(summary(model_2)$adj.r.squared*100, 2), " %"))
+RMSE_train <- c(paste0(round(RMSE(model_1$fitted.values, train$log_selling_price), 4)), 
+                paste0(round(RMSE(model_2$fitted.values, train_2$log_selling_price), 4)))
+RMSE_test <- c(paste0(round(RMSE(predict_1, test$log_selling_price), 4)), 
+               paste0(round(RMSE(predict_3, test_log_selling_price), 4)))
+MAPE <- c(paste0(round(MAPE(predict_1, test$log_selling_price), 4)), 
+          paste0(round(MAPE(predict_3, test_log_selling_price), 4)))
+
+# create df
+df_2 <- data.frame(Model, Predictors, Adj.R_squared, RMSE_train, RMSE_test, MAPE)
+
+kable(df_2, align = "c") %>%
+  kableExtra::kable_styling(position = "center")
+```
+
+Viewing the result in comparison, we could see that:
+
+* `model_3` has much fewer predictors than `model_1` (29 difference),
+* `model_1` performs slightly better with the Adj. R-squared which can depict 91.12% of the data while `model_3` 86.29%,
+* `model_1` has lower RMSE in the `train` and `test` data than `model_3`,
+* both models perform well in both `train` and `test` data which means that the models fit just right (no under or overfitting),
+* MAPE in `model_1` is better than `model_3`
+
+Based on those observations, we'll opt for the third model since the prediction result isn't very much different with the first model and it only takes 12 predictors.
+
+## Assumptions
+
+In this part, we're going to check whether the model we chose follows the regression assumptions.
+
+### Linearity
+
+Linear regression needs the relationship between the independent and dependent variables to be linear.  It is also important to check for outliers since linear regression is sensitive to outlier effects. 
+
+Linearity and additivity of the relationship between dependent and independent variables are described as:
+
+* The expected value of dependent variable is a straight-line function of each independent variable, holding the others fixed. 
+* The slope of that line does not depend on the values of the other variables.
+* The effects of different independent variables on the expected value of the dependent variable are additive.
+
+We're going to check the linearity of our model by plotting it.
+
+```{r fig.align='center'}
+# residual vs fitted plot
+ggplot(model_3, aes(x = .fitted, y = .resid)) + 
+  geom_point(color = "#4c72b0", alpha = 0.3) +
+  geom_hline(aes(yintercept = 0), color = "#345790") +
+  geom_smooth(color = "#2d1a94") +
+  theme_bw() +
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+```
+
+Here we could see that our model isn't linear towards the end, which means that the model could predict better in the mid-range, but when the model is predicting higher values, the error is larger in the negative side since our model tends to under-predict the value.
+
+### Residuals Normality
+
+Second, we're going to check for residuals normality.
+
+```{r fig.align='center'}
+# histogram
+ggplot(model_3, aes(x = .resid)) +
+  geom_histogram(bins = 30, fill = "#4c72b0", color = "#345790", alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Residuals Distribution",
+       x = "Residuals",
+       y = "Frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Here we could see that the residuals are, indeed, normally distributed. However, there were still some outliers which I assume is still related with the reason why our linearity plot is curved towards the end.
+
+
+### Homoscedasticity
+
+We're next going to check whether the data are homoscedastic (residuals are equal across the regression line) with `bptest()`.
+
+```{r}
+# check for homoscedasticity
+bptest(model_3)
+```
+
+Here we could see that the p-value of `model_3` is far below 0.05, which means that our data is heteroscedastic.
+
+### No-Multicollinearity
+
+For the last assumption, we're going to check if our data fulfills the no-multicollinearity assumption with `vif()` function.
+
+```{r}
+# check for multicollinearity
+vif(model_3)
+```
+
+Here we could see that there's a strong collinearity between `fuel_type` Diesel and Petrol. We could also see that engine has a high VIF value.
+
+# Model Improvement
+
+## Build Model Improvement
+
+Based on the assumptions that we evaluate above, we're now going to fix the model. We're first going to remove outliers in the data.
+
+```{r}
+# remove outliers
+car_improv <- car_clean_3 %>% filter(log_selling_price < 15.8)
+
+# check rows removed
+(nrow(car_improv)/nrow(car) - 1)*100
+```
+
+We're now going to split the data to `train` and `test`
+
+```{r}
+# split data
+set.seed(902)
+samplesize <- round(0.8 * nrow(car_improv), 0)
+index <- sample(seq_len(nrow(car_improv)), size = samplesize)
+
+train_improv <- car_improv[index, ]
+test_improv <- car_improv[-index, ]
+```
+
+We're now going to repeat the same step as how we build the second model and remove `fuel_type` Diesel and `engine`.
+
+```{r}
+# create varlist object for data treatment
+varlist_improv <- car_improv %>% 
+  select(-"log_selling_price", -"selling_price") %>% 
+  colnames()
+
+# saving deleted columns to an object
+train_log_selling_price_improv <- train_improv$log_selling_price
+test_log_selling_price_improv <- test_improv$log_selling_price
+
+# training data treatment
+train_treatment_improv <- designTreatmentsZ(dframe = train_improv,
+                                     varlist = varlist_improv,
+                                     minFraction = 0.1)
+
+# apply treatment to both train and test data
+train_improv_2 <- prepare(train_treatment_improv, train_improv) %>% 
+  select(-transmission_type_lev_x_Manual)
+test_improv_2 <- prepare(train_treatment_improv, test_improv) %>% 
+  select(-transmission_type_lev_x_Manual)
+
+# remove columns with _catP
+train_improv_2 <- train_improv_2 %>%
+  select(-contains("_catP"))
+test_improv_2 <- test_improv_2 %>%
+  select(-contains("_catP"))
+
+# joining log_selling_price back to the df
+train_improv_2$log_selling_price <- train_log_selling_price_improv
+
+# model improvement
+model_improv <- lm(log_selling_price ~. - seats -seller_type_lev_x_Dealer -
+                     fuel_type_lev_x_Diesel - engine, train_improv_2)
+summary(model_improv)
+```
+
+The R-squared and Adj. R-squared aren't very much different with the model before with 85.75%. We're now going to predict the result and compare it to the model before.
+
+```{r}
+# predict model
+predict_improv <- predict(model_improv, test_improv_2)
+```
+
+```{r echo=FALSE, kable3, results='asis'}
+# create columns
+Model <- c("model_3", "model_improvement")
+Predictors <- c("12", "11")
+Adj.R_squared <- c(paste0(round(summary(model_3)$adj.r.squared*100, 2), " %"), 
+                   paste0(round(summary(model_improv)$adj.r.squared*100, 2), " %"))
+RMSE_train <- c(paste0(round(RMSE(model_3$fitted.values, train_2$log_selling_price), 4)), 
+                paste0(round(RMSE(model_improv$fitted.values, train_improv_2$log_selling_price), 4)))
+RMSE_test <- c(paste0(round(RMSE(predict_3, test_log_selling_price), 4)), 
+               paste0(round(RMSE(predict_improv, test_log_selling_price_improv), 4)))
+MAPE <- c(paste0(round(MAPE(predict_3, test_log_selling_price), 4)), 
+          paste0(round(MAPE(predict_improv, test_log_selling_price_improv), 4)))
+
+# create df
+df <- data.frame(Model, Predictors, Adj.R_squared, RMSE_train, RMSE_test, MAPE)
+
+kable(df, align = "c") %>%
+  kableExtra::kable_styling(position = "center")
+```
+
+Still, the results aren't very much different from the base model.
+
+## Model Improvement Evaluation
+
+We're now going to re-evaluate our model based on the 4 assumptions: linearity, residuals normality, homoscedasticity, and no-multicollinearity.
+
+```{r fig.align='center'}
+# residual vs fitted plot
+ggplot(model_improv, aes(x = .fitted, y = .resid)) + 
+  geom_point(color = "#4c72b0", alpha = 0.3) +
+  geom_hline(aes(yintercept = 0), color = "#345790") +
+  geom_smooth(color = "#2d1a94") +
+  theme_bw() +
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# histogram
+ggplot(model_improv, aes(x = .resid)) +
+  geom_histogram(bins = 30, fill = "#4c72b0", color = "#345790", alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Residuals Distribution",
+       x = "Residuals",
+       y = "Frequency") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# homoscedasticity
+bptest(model_improv)
+
+# no-multicollinearity
+vif(model_improv)
+```
+
+After improving our model, it doesn't seem to give us satisfactory result. The new model just performs better in the multicollinearity since now there's no VIF > 5. It still gives us the same tailed value in linearity, and model is still heteroscedastic.
+
+# Conclusion
+
+After several tries of me trying to pimp up the model, there are still assumptions which are not satisfied yet, linearity and homoscedasticity. From what I could see by my own *newbie* perspective, it could happen because:
+
+* `selling_price` relies heavily on the `brand` of the car. However, we should also know that different brands have different models and how they influence the selling price might be different. I feel like our model could do a lot better with more data such as the type of the car. It would just make more sense if a car resale value is seen more based on the brand *and* the type because the same type of a car by different brands could have a different resale value.
+* At the first pre-process stage of the data, we could see that the `selling_price` is very skewed to the right. From tens of thousands of data, 75% of them are actually priced between INR 34,000 - 799,250. With the median value of 530,000 and maximum value of 39,500,000 is too huge of a gap and we couldn't just remove the 25% of the data.
+* 50% of the data were actually missing values. Perhaps if there's a more logical way to impute those missing values it could've been better. An additional info of the car type as mentioned above could make the imputation more precise.
+* Or maybe... the data is just the way it is and linear regression isn't the most appropriate method for this data. 
+
+All in all, the 2 things that I really hope in the future regarding this dataset is an additional car `type` variable and predicting this data with another machine learning method. I hope I could also learn a lot more and be better in machine learning so I can pinpoint exactly what's wrong and what's not. This is a long journey but thanks for reading until the end! :)
+
+# Resources
+
+1. https://towardsdatascience.com/assumptions-of-linear-regression-5d87c347140
+2. https://people.duke.edu/~rnau/testing.htm
+3. https://www.statisticssolutions.com/assumptions-of-linear-regression/
+4. Lesmeister, Cory and Chinnamgari, Dr. Sunil Kumar (2019). *Advanced Machine Learning with R*. Packt Publisher.
